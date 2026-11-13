@@ -1,6 +1,7 @@
 # execution/paper_trader.py
 import json
 import logging
+import math
 import os
 
 from config import settings
@@ -16,7 +17,9 @@ class PaperTrader:
     - A gate signal on bar N becomes a PENDING entry; it fills at bar N+1's
       OPEN (you cannot trade the close you just observed). The entry bar's own
       range is then checked against the stop/target.
-    - Fixed % stop (from the fill price), fixed R target.
+    - Existing strategies use a fixed % stop and fixed R target. Trend mode
+      sizes the stop at 2x ATR, has no fixed target, and trails the stop after
+      each completed bar (the updated stop is active from the next bar).
     - Fees: entry and STOP/EOD/STALE exits are taker (market); the TARGET exit
       is maker (resting limit, assumed to fill when touched - optimistic).
     - If a bar touches both stop and target, the STOP is assumed first and the
@@ -30,17 +33,36 @@ class PaperTrader:
     Not modelled: slippage beyond the next-open fill, partial fills.
     """
 
-    def __init__(self, state_path=None, persist=True, log_trades=True):
+    def __init__(self, state_path=None, persist=True, log_trades=True,
+                 initial_equity=None, symbol=None, equity=None):
+        if equity is not None and initial_equity is not None:
+            if not math.isclose(float(equity), float(initial_equity)):
+                raise ValueError(
+                    f"equity={equity} and initial_equity={initial_equity} disagree"
+                )
+        resolved_equity = equity if equity is not None else initial_equity
+        if resolved_equity is None:
+            resolved_equity = settings.PAPER_START_EQUITY
+        try:
+            resolved_equity = float(resolved_equity)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"initial equity must be finite and > 0, got {resolved_equity!r}") from exc
+        if not math.isfinite(resolved_equity) or resolved_equity <= 0:
+            raise ValueError(f"initial equity must be finite and > 0, got {resolved_equity!r}")
+
         # persist=False / log_trades=False: used by the backtest (no disk I/O)
         self.persist = persist
         self.log_trades = log_trades
         self.state_path = state_path or settings.PAPER_STATE_PATH
-        self.equity = settings.PAPER_START_EQUITY
+        self.initial_equity = resolved_equity
+        self.equity = resolved_equity
+        self.symbol = symbol
         self.position = None
         self.pending = None
         self.trades = []
         self.last_bar = None
         self._last_ts = -1
+        self._history = []
         if persist:
             self._load()
 
@@ -80,7 +102,9 @@ class PaperTrader:
         """Advance with a finished bar (fill pending / manage position); no new signals."""
         self._advance(bar)
 
-    def on_bar(self, bar: dict, allowed: bool, direction, reason: str):
+    def on_bar(self, bar: dict, allowed: bool, direction, reason: str,
+               a_strength=None, b_strength=None, delta_ratio=None,
+               compression_ratio=None, distance_to_level_pct=None):
         """
         Advance with the bar that just closed, then handle the gate decision.
         Returns "QUEUED" (entry will fill at the next bar's open), "SKIPPED"
@@ -100,6 +124,10 @@ class PaperTrader:
         self.pending = {
             "side": direction.value, "signal_ts": bar["open_time"],
             "signal_close": bar["close"], "reason": reason,
+            "a_strength": a_strength, "b_strength": b_strength,
+            "delta_ratio": delta_ratio,
+            "compression_ratio": compression_ratio,
+            "distance_to_level_pct": distance_to_level_pct,
         }
         log.info("PAPER SIGNAL %s on close %.2f - entry at next bar open",
                  direction.value, bar["close"])
@@ -145,7 +173,7 @@ class PaperTrader:
 
         if self.pending is not None:
             p, self.pending = self.pending, None
-            fresh = bar["open_time"] - p["signal_ts"] <= 2 * settings.INTERVAL_MS
+            fresh = bar["open_time"] - p["signal_ts"] <= 3 * settings.INTERVAL_MS
             if fresh and self.position is None:
                 self._open(bar, p)
             else:
@@ -153,31 +181,46 @@ class PaperTrader:
 
         if self.position is not None:
             self._manage(bar)
+        self._history.append(bar)
+        if len(self._history) > max(200, settings.TREND_ATR_WINDOW + 1):
+            del self._history[:-max(200, settings.TREND_ATR_WINDOW + 1)]
         self._save()
 
     def _open(self, bar: dict, pend: dict) -> None:
-        entry = bar.get("open", bar["close"])
         side = pend["side"]
+        entry_quoted = bar.get("open", bar["close"])
+        sign = 1 if side == "LONG" else -1
+        entry = entry_quoted * (1 + sign * settings.PAPER_SLIPPAGE_PCT / 100.0)
         risk_cash = self.equity * (settings.PAPER_RISK_PER_TRADE_PCT / 100.0)
-        stop_dist = entry * (settings.PAPER_STOP_PCT / 100.0)
+        trend_mode = getattr(settings, "ACTIVE_STRATEGY", "sweep") == "trend"
+        atr = self._average_range(self._history, settings.TREND_ATR_WINDOW) if trend_mode else None
+        stop_dist = (settings.TREND_ATR_MULTIPLE * atr if trend_mode and atr is not None
+                     else entry * (settings.PAPER_STOP_PCT / 100.0) if not trend_mode else 0.0)
         if entry <= 0 or stop_dist <= 0 or risk_cash <= 0:
             return
         size = risk_cash / stop_dist
-        sign = 1 if side == "LONG" else -1
         stop = entry - sign * stop_dist
-        target = entry + sign * stop_dist * settings.PAPER_TARGET_R_MULTIPLE
+        target = (None if trend_mode or settings.PAPER_TARGET_R_MULTIPLE <= 0 else
+                  entry + sign * stop_dist * settings.PAPER_TARGET_R_MULTIPLE)
 
         self.position = {
             "side": side, "entry": entry, "stop": stop, "stop_initial": stop,
             "target": target, "size": size, "risk_cash": risk_cash,
             "signal_ts": pend["signal_ts"], "signal_close": pend["signal_close"],
+            "a_strength": pend.get("a_strength"), "b_strength": pend.get("b_strength"),
+            "delta_ratio": pend.get("delta_ratio"),
+            "compression_ratio": pend.get("compression_ratio"),
+            "distance_to_level_pct": pend.get("distance_to_level_pct"),
             "entry_slippage_vs_signal": (entry - pend["signal_close"]) * sign,
             "entry_ts": bar["open_time"], "entry_reason": pend["reason"],
             "mfe": entry, "mae": entry,
+            "symbol": self.symbol,
+            "atr_entry": atr,
         }
         log.info("PAPER OPEN %s @ %.2f (next-bar open; signal close %.2f) "
-                 "stop=%.2f target=%.2f size=%.4f",
-                 side, entry, pend["signal_close"], stop, target, size)
+                 "stop=%.2f target=%s size=%.4f",
+                 side, entry, pend["signal_close"], stop,
+                 f"{target:.2f}" if target is not None else "TRAIL", size)
 
     def _manage(self, bar: dict) -> None:
         p = self.position
@@ -185,11 +228,11 @@ class PaperTrader:
         if p["side"] == "LONG":
             p["mfe"] = max(p["mfe"], high)
             p["mae"] = min(p["mae"], low)
-            stop_hit, target_hit = low <= p["stop"], high >= p["target"]
+            stop_hit, target_hit = low <= p["stop"], (p.get("target") is not None and high >= p["target"])
         else:
             p["mfe"] = min(p["mfe"], low)
             p["mae"] = max(p["mae"], high)
-            stop_hit, target_hit = high >= p["stop"], low <= p["target"]
+            stop_hit, target_hit = high >= p["stop"], (p.get("target") is not None and low <= p["target"])
 
         if stop_hit:
             self._close(bar, p["stop"], "STOP", ambiguous=target_hit)
@@ -211,9 +254,30 @@ class PaperTrader:
             elif p["side"] == "SHORT" and p["mfe"] <= p["entry"] - be * risk:
                 p["stop"] = min(p["stop"], p["entry"])
 
+        # Trail from this completed bar for the NEXT bar only; do not use its
+        # high/low to retroactively trigger a stop that was not active yet.
+        if getattr(settings, "ACTIVE_STRATEGY", "sweep") == "trend":
+            atr = self._average_range(self._history + [bar], settings.TREND_ATR_WINDOW)
+            if atr is not None and atr > 0:
+                multiple = settings.TREND_ATR_MULTIPLE
+                if p["side"] == "LONG":
+                    p["stop"] = max(p["stop"], high - multiple * atr)
+                else:
+                    p["stop"] = min(p["stop"], low + multiple * atr)
+
+    @staticmethod
+    def _average_range(bars, window):
+        recent = bars[-window:]
+        if len(recent) < window:
+            return None
+        return sum(float(b["high"]) - float(b["low"]) for b in recent) / window
+
     def _close(self, bar: dict, exit_price: float, exit_reason: str,
                ambiguous: bool = False) -> None:
         p = self.position
+        if exit_reason in ("STOP", "TIME_STOP", "STALE_ON_RESTART"):
+            sign_exit = -1 if p["side"] == "LONG" else 1
+            exit_price *= 1 + sign_exit * settings.PAPER_SLIPPAGE_PCT / 100.0
         sign = 1 if p["side"] == "LONG" else -1
         gross = (exit_price - p["entry"]) * sign * p["size"]
         exit_rate = (settings.PAPER_FEE_MAKER_PCT if exit_reason == "TARGET"
@@ -225,6 +289,7 @@ class PaperTrader:
         trade = {
             **p,
             "exit": exit_price, "exit_ts": bar["open_time"], "exit_reason": exit_reason,
+            "bars_held": (bar["open_time"] - p["entry_ts"]) // settings.INTERVAL_MS + 1,
             "ambiguous_bar": ambiguous,
             "fee_model": {"entry": "taker", "exit": "maker" if exit_reason == "TARGET" else "taker"},
             "gross_pnl": gross, "fees": fees, "pnl": pnl,

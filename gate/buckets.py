@@ -1,5 +1,4 @@
-# gate/buckets.py
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 
@@ -11,9 +10,13 @@ class Dir(Enum):
 
 @dataclass
 class BucketSignal:
-    bucket: str          # "A", "B", "C"
+    bucket: str
     direction: Dir
-    strength: float      # 0.0 .. 1.0
+    strength: float
     reason: str
-    active: bool = True   # False = bucket cannot act (e.g. C with no usable levels)
-    extra: dict | None = None   # structured levels for replay/audit (e.g. wall distances)
+    disabled: bool = False
+    extra: dict = field(default_factory=dict)
+
+    @property
+    def active(self) -> bool:
+        return self.direction != Dir.NEUTRAL

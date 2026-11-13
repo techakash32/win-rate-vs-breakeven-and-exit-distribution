@@ -35,7 +35,9 @@ class Pipeline:
         self.agg = BarAggregator(
             bucket_size=settings.VP_BUCKET_SIZE,
             # +1 so the profile can exclude the bar that just closed
-            history_len=max(settings.VP_WINDOW_BARS, settings.AGGR_WINDOW_BARS) + 1,
+            history_len=max(settings.VP_WINDOW_BARS, settings.AGGR_WINDOW_BARS,
+                            settings.ABSORPTION_DELTA_BASELINE_BARS,
+                            settings.ABSORPTION_RANGE_BASELINE_BARS + 3) + 1,
         )
         self.decider = Decider()
         self._upgrading = False

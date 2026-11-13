@@ -1,0 +1,47 @@
+I want to achieve highest statistically reliable NET expectancy after costs without excessive drawdown.
+
+
+Heatmap
+Time and SalesGamma Exposure
+Footprint
+Delta
+VWAP
+Order Flow
+Auction Market Theory
+Volume Profile
+Market Profile
+
+
+Donchian indicator
+Settings
+Length 96
+5min timeframe
+Enter long trade when break out over the top line( price is bullish upwards)
+Problem:consolidating markets, price is likely to revert to middle line
+Confirmation LWT1
+Change period to 25
+Change smoothing period to 20
+Add volume indicator
+Change MA length to 30
+(Change volume moving average color to white)
+
+So: Price come up and touch dochian upper red line
+lWT1 indicator has to be green
+Volume bars be above the white line and green
+
+=market is not consolidating 
+1. setup: put the stopp loss on the orange middle line
+
+2. if its very high : sl at the recent swing low
+
+TP at a 2:1 risk reward ratio
+
+For short: exactly reverse
+
+Secret trick: 
+Strong resistance levels- losing trades 
+solution: go on a higher time frame and put all the major support and resistance levels
+
+When it broke the resistance level: high probable trade bc there is a ton of confluence 
+
+Maybe even combne with supply and demand zones

@@ -5,11 +5,9 @@ import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
-
 from config import settings
 
 log = logging.getLogger(__name__)
-
 
 @dataclass
 class BarBucket:

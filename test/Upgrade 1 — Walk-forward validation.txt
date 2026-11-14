@@ -1,3 +1,26 @@
+# If not already set in this session
+$env:ACTIVE_STRATEGY        = "trend"
+$env:BACKTEST_INTERVAL      = "4h"
+$env:BUCKET_B_ENABLED       = "false"
+$env:TREND_LONDON_ONLY      = "true"
+$env:PAPER_SLIPPAGE_PCT     = "0.04"
+$env:SYMBOLS                = "BTCUSDT,ETHUSDT,XRPUSDT,ADAUSDT"
+
+python -m scripts.paper_live
+
+
+
+I met this girl, online of course. Her name was weird for me. Probably because I had never heard of such a name before and if I be honest, It could have been easily read as a misspelt version of an uncommon name. She was like a child but was insignificantly older than me. Her way of texting, her repetitive use of letters in a word to express the intensity of her thoughts and feelings, I had never met someone like her. Her excitement was everything to me. She was colourful. She was bright. Those poems that I used to come across in cinemas, songs, books about a girl being the sun in someone's rainy life were inapt to me until I met her. In fact her presence made me realise for how long had I been walking in rain. 
+
+Maybe you don't realise how monochromatic your soul has become until someone sprinkles even a pinch of colour over your life. Humans are adaptable beings and maybe that's why you adapt to your sadness because it has been your home for so long. I guess it's important to keep such people around who can remind you of what your soul deserves and can become.
+
+As time passed, we went from good friends to the ones who shared the tiniest change in their life. I learned her lingo, shared her likings, her lame jokes, I almost moulded into the boy version of her. I became a child. I felt the happiest with her because we both were creatives and dreamers. We built this own world for us, our inside jokes, our references, everything was unbelievably a source of happiness. Even if we were sad about something (which was rarely the case), we found comfort in the fact that we shared it. Even being thousands of kilometres apart, we made memories. We found ways. Eventually I fell for her which was sort of obvious. Anyone would. So one day, I proposed her. It was the act of an insanity but well if I quote the movie 'her', 'what is love if not a socially acceptable insanity? It is a crazy thing to do', indeed. What's unbelievable for me was that she liked me back. We dated, online. My awkward tiny replies turned into long conversations. She was chatty. She made me chatty. I still remember her conversations. Some of them. It went on like that in addition to some tiring/exhaustive fights and arguments. She was immature so I always kept my reactions aside and was understanding to her. I acted maturely because one of us had to or we would've hurt each other beyond repair. It took a lot of energy and I could never vent about how I actually felt. Even if I did, she would turn it upside down and tell me how I'm wrong. It wasn't long until I started feeling like a parent trying to make a child understand something. 
+
+After lots of fights, arguments and being on the verge of breaking off with her multiple times, one day she told she started to like someone else. I couldn't handle it. After everything I had done for us, It felt unfair. She compared me to him a lot of times which made me miserable. She started to treat me as a choice because the guy she liked, lived in her city. She hurt quite many times with her immature words so I broke up with her. I couldn't sleep for nights. I couldn't stop crying. I can't remember those days anymore so I can't think of much to write. What I do remember is that I was completely by myself. I had no one to comfort me. I had no one to even share this immeasurable loss that I felt. I went through this by myself just like most of incidents that happened in my life. That's why I train myself to never need anyone. I don't push anyone away anymore but I never let my walls down, I just deceive them into thinking that I have. 
+
+This was nearly 2 years ago. When this song came out, we listened to it online but together, at the same time, right when it was premiered. It was incredibly relatable for us. I don't miss her love anymore but I miss our friendship the most. She taught me that friendship is important than the chemistry. If I quote our favourite book 'Call Me by Your Name', "Perhaps we were friends first and lovers second but then perhaps this is what lovers are'.
+
+
 I want to achieve highest statistically reliable NET expectancy after costs without excessive drawdown.
 
 

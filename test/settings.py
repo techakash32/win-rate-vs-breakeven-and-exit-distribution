@@ -9,17 +9,18 @@ Defaults below are for 1h bars; strategy-specific trend mode replaces fixed-R
 exits with ATR sizing and a trailing stop.
 """
 import os
+import math
 
 
 # =====================================================================
 # Instrument and timeframe
 # =====================================================================
 
-_DEFAULT_SYMBOLS = "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT"
+_DEFAULT_SYMBOLS = "BTCUSDT,ETHUSDT,XRPUSDT,ADAUSDT"
 SYMBOLS = [s.strip().upper() for s in os.environ.get("SYMBOLS", _DEFAULT_SYMBOLS).split(",") if s.strip()]
 if not SYMBOLS:
     raise ValueError("SYMBOLS must contain at least one comma-separated symbol")
-INTERVAL = os.environ.get("BACKTEST_INTERVAL", "1h")
+INTERVAL = os.environ.get("BACKTEST_INTERVAL", "4h")
 
 _UNIT_MS = {"m": 60_000, "h": 3_600_000, "d": 86_400_000}
 INTERVAL_MS = int(INTERVAL[:-1]) * _UNIT_MS[INTERVAL[-1]]
@@ -75,14 +76,16 @@ _v = _VENUES.get(VENUE, _VENUES["binance"])
 
 PAPER_FEE_TAKER_PCT = _v["taker"]
 PAPER_FEE_MAKER_PCT = _v["maker"]
-PAPER_SLIPPAGE_PCT = _v["slippage"]
+PAPER_SLIPPAGE_PCT = float(os.environ.get("PAPER_SLIPPAGE_PCT", "0.04"))
+if not math.isfinite(PAPER_SLIPPAGE_PCT) or PAPER_SLIPPAGE_PCT < 0:
+    raise ValueError("PAPER_SLIPPAGE_PCT must be finite and nonnegative")
 
 
 # =====================================================================
 # Strategy selection
 # =====================================================================
 
-ACTIVE_STRATEGY = os.environ.get("ACTIVE_STRATEGY", "sweep").strip().lower()
+ACTIVE_STRATEGY = os.environ.get("ACTIVE_STRATEGY", "trend").strip().lower()
 SWEEP_LONG_ONLY = os.environ.get("SWEEP_LONG_ONLY", "false").strip().lower() in {
     "1", "true", "yes", "on"
 }
@@ -94,7 +97,7 @@ FUNDING_B_MODE = os.environ.get("FUNDING_B_MODE", "confirm").strip().lower()
 TREND_DONCHIAN_LOOKBACK = int(os.environ.get("TREND_DONCHIAN_LOOKBACK", "40"))
 TREND_ATR_WINDOW = int(os.environ.get("TREND_ATR_WINDOW", "14"))
 TREND_ATR_MULTIPLE = float(os.environ.get("TREND_ATR_MULTIPLE", "2.0"))
-TREND_LONDON_ONLY = os.environ.get("TREND_LONDON_ONLY", "false").strip().lower() in {
+TREND_LONDON_ONLY = os.environ.get("TREND_LONDON_ONLY", "true").strip().lower() in {
     "1", "true", "yes", "on"
 }
 if ACTIVE_STRATEGY == "trend":
@@ -103,7 +106,7 @@ if ACTIVE_STRATEGY == "trend":
     PAPER_MAX_HOLD_BARS = 90
 
 BUCKET_B_ENABLED = os.environ.get(
-    "BUCKET_B_ENABLED", "True"
+    "BUCKET_B_ENABLED", "False"
 ).strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -112,7 +115,7 @@ BUCKET_B_ENABLED = os.environ.get(
 # =====================================================================
 
 WS_BASE = "wss://fstream.binance.com/market/stream?streams="
-CONNECT_HOST = "16.76.169.211"            # fixed IP; set to None to use DNS
+CONNECT_HOST = None                        # use DNS for current Binance endpoint IP
 RECONNECT_BASE_DELAY = 1.0
 RECONNECT_MAX_DELAY = 30.0
 LOG_RAW = True

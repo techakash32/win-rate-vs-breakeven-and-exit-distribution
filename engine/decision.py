@@ -213,8 +213,12 @@ class Decider:
         if len(vp_bars) < settings.WARMUP_BARS:
             _DECIDE_DIAG["other_reject"] += 1
             return Decision(warmup=True, warmup_have=len(vp_bars))
-
-        vp = compute_volume_profile(vp_bars, settings.VP_VA_PERCENT)
+        
+        # vp = compute_volume_profile(vp_bars, settings.VP_VA_PERCENT)
+        if settings.ACTIVE_STRATEGY == "trend":
+            vp = None                              # Donchian doesn't use VP
+        else:
+            vp = compute_volume_profile(vp_bars, settings.VP_VA_PERCENT)
         if vp is None:
             _DECIDE_DIAG["vp_none"] += 1
         approx = sum(1 for b in vp_bars if b.get("approx_vp") or b.get("synthetic"))

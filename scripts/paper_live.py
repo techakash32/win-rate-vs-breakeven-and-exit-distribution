@@ -1,168 +1,239 @@
 #!/usr/bin/env python3
-"""
-Live paper trading for the 4-symbol London trend strategy.
+"""Paper-only live runner for the four-symbol 4h London trend configuration.
 
-Uses the SAME decision + paper-trader logic as the backtest. Only difference
-is the data source: live Binance 4h WebSocket instead of historical klines.
+The decision path is the same Decider used by backtest_step5a, and orders are
+simulated only through PaperTrader. This script never submits exchange orders.
 
-Runs 4-8 weeks to validate that live execution matches backtest assumptions.
-
-Usage:
+Run from the repository root after setting the documented environment vars:
     python -m scripts.paper_live
 """
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
 import os
+import time
+import urllib.parse
+import urllib.request
 from collections import deque
 from datetime import datetime, timezone
 
 from config import settings
-from data.ws_manager import BinanceMarketStream  # kline + trade, works for both
-from engine.decision import evaluate_bucket_a
+from data.ws_manager import BinanceMarketStream
+from engine.decision import Decider
 from execution.paper_trader import PaperTrader
 
 log = logging.getLogger("paper_live")
 
-# The 4 approved symbols from the 12/12 backtest
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "XRPUSDT", "ADAUSDT"]
+EXPECTED_SYMBOLS = ["BTCUSDT", "ETHUSDT", "XRPUSDT", "ADAUSDT"]
 INTERVAL = "4h"
+PRELOAD_BARS = 60
+HISTORY_LIMIT = 200
+LOG_DIR = "logs/paper_live"
+SIGNALS_LOG = os.path.join(LOG_DIR, "signals.jsonl")
 
-# London session: signals only fire on bars OPENING at 08:00 or 12:00 UTC.
-# Those bars CLOSE at 12:00 and 16:00 UTC, and their next-bar-open fills happen
-# at 12:00 and 16:00 UTC. No other bars are eligible.
-LONDON_OPEN_HOURS = {8, 12}
 
-SIGNALS_LOG = "logs/paper_live/signals.jsonl"
-DIVERGENCE_LOG = "logs/paper_live/divergence.jsonl"
+def validate_config() -> None:
+    """Fail closed rather than silently paper-trading a different profile."""
+    problems = []
+    if getattr(settings, "ACTIVE_STRATEGY", None) != "trend":
+        problems.append("ACTIVE_STRATEGY must be 'trend'")
+    if getattr(settings, "INTERVAL", None) != INTERVAL:
+        problems.append("BACKTEST_INTERVAL must resolve to '4h'")
+    if list(getattr(settings, "SYMBOLS", [])) != EXPECTED_SYMBOLS:
+        problems.append(f"SYMBOLS must be {EXPECTED_SYMBOLS!r}")
+    if getattr(settings, "BUCKET_B_ENABLED", True):
+        problems.append("BUCKET_B_ENABLED must be false for this trend profile")
+    if not getattr(settings, "TREND_LONDON_ONLY", False):
+        problems.append("TREND_LONDON_ONLY must be true")
+    if abs(float(getattr(settings, "PAPER_SLIPPAGE_PCT", -1)) - 0.04) > 1e-9:
+        problems.append("PAPER_SLIPPAGE_PCT must be 0.04 (percent units)")
+    if problems:
+        raise RuntimeError("Invalid paper-live configuration: " + "; ".join(problems))
+    log.info(
+        "Validated profile: trend, %s, London-only, slippage %.4f%%, symbols=%s",
+        settings.INTERVAL, settings.PAPER_SLIPPAGE_PCT, settings.SYMBOLS,
+    )
+
+
+def fetch_recent_closed_bars(symbol: str, limit: int = PRELOAD_BARS) -> list[dict]:
+    """Download recent closed USD-M klines, including volume fields for the gate."""
+    params = urllib.parse.urlencode({
+        "symbol": symbol.upper(), "interval": INTERVAL, "limit": limit,
+    })
+    url = f"{settings.REST_BASE}/fapi/v1/klines?{params}"
+    request = urllib.request.Request(url, headers={"User-Agent": "paper-live/1.0"})
+    with urllib.request.urlopen(request, timeout=settings.REST_TIMEOUT_S) as response:
+        raw = json.loads(response.read())
+
+    now_ms = int(time.time() * 1000)
+    bars = []
+    for k in raw:
+        open_time, close_time = int(k[0]), int(k[6])
+        if close_time >= now_ms:
+            continue
+        bars.append({
+            "symbol": symbol.upper(),
+            "interval": INTERVAL,
+            "open_time": open_time,
+            "open": float(k[1]),
+            "high": float(k[2]),
+            "low": float(k[3]),
+            "close": float(k[4]),
+            "volume": float(k[5]),
+            "close_time": close_time,
+            "trades": int(k[8]),
+            "quote_volume": float(k[7]),
+        })
+    return bars
 
 
 class LiveTrendRunner:
-    """One runner per symbol. Independent state, independent PaperTrader."""
+    """Independent warmup, decision state, and PaperTrader per symbol."""
 
     def __init__(self, symbol: str):
         self.symbol = symbol
-        self.history = deque(maxlen=200)
+        self.history: deque[dict] = deque(maxlen=HISTORY_LIMIT)
+        self.decider = Decider()
         self.trader = PaperTrader(
             persist=True,
-            state_path=f"logs/paper_live/state_{symbol}.json",
+            state_path=os.path.join(LOG_DIR, f"state_{symbol}.json"),
+            symbol=symbol,
+            initial_equity=settings.PAPER_START_EQUITY / len(settings.SYMBOLS),
         )
-        self.pending_signal_info = None  # to track fill divergence
-        self.stats = {
-            "bars": 0,
-            "london_rejects": 0,
-            "no_breakout": 0,
-            "signals": 0,
-            "fills": 0,
-        }
+        self.stats = {"bars": 0, "duplicates": 0, "signals": 0, "warmup": 0}
 
-    async def on_candle(self, c: dict):
-        if not c.get("is_closed", True):
+    def _remember_decision_state(self, bars: list[dict]) -> None:
+        """Replay gate history for warmup/cooldown without creating old entries."""
+        for i, bar in enumerate(bars):
+            start = max(0, i - HISTORY_LIMIT + 1)
+            self.decider.decide(bars[start:i + 1], bar["close"])
+
+    async def preload(self) -> None:
+        try:
+            bars = await asyncio.to_thread(fetch_recent_closed_bars, self.symbol)
+        except Exception as exc:
+            log.warning("%s preload failed (%s); continuing with WebSocket warmup",
+                        self.symbol, exc)
+            return
+        if not bars:
+            log.warning("%s preload returned no closed bars; continuing with WebSocket warmup",
+                        self.symbol)
             return
 
-        self.stats["bars"] += 1
+        for bar in bars:
+            self.history.append(bar)
 
-        # Build the bar dict — same fields as backtest
+        # Keep the Decider's state consistent with the immediately preceding
+        # history. These historical decisions warm the gate only; they do not
+        # create retroactive paper entries.
+        self._remember_decision_state(bars)
+
+        # Restore/reconcile any persisted position or pending entry with bars
+        # newer than its last processed timestamp. manage() never creates a
+        # new entry and preserves PaperTrader's normal stop/exit behavior.
+        for bar in bars:
+            if bar["open_time"] > self.trader._last_ts:
+                self.trader.manage(bar)
+
+        # _history is intentionally not persisted by PaperTrader. Seed it so
+        # the next live trend entry has its ATR lookback after a process restart.
+        if len(self.trader._history) < settings.TREND_ATR_WINDOW:
+            self.trader._history = [
+                dict(bar) for bar in bars[-max(settings.TREND_ATR_WINDOW, 15):]
+            ]
+        self.trader._save()
+
+        last = bars[-1]
+        last_utc = datetime.fromtimestamp(last["open_time"] / 1000, timezone.utc)
+        log.info("%s preload complete: fetched=%d, history=%d, trader_history=%d, "
+                 "last_bar_open=%s UTC", self.symbol, len(bars), len(self.history),
+                 len(self.trader._history), last_utc.strftime("%Y-%m-%d %H:%M"))
+
+    async def on_candle(self, candle: dict) -> None:
+        # BinanceMarketStream emits closed candles only.
         bar = {
-            "open_time": c["open_time"],
-            "open": c["open"],
-            "high": c["high"],
-            "low": c["low"],
-            "close": c["close"],
+            "symbol": self.symbol,
+            "interval": candle.get("interval", INTERVAL),
+            "open_time": int(candle["open_time"]),
+            "open": float(candle["open"]),
+            "high": float(candle["high"]),
+            "low": float(candle["low"]),
+            "close": float(candle["close"]),
+            "volume": float(candle.get("volume", 0.0)),
+            "trades": int(candle.get("trades", 0)),
+            "quote_volume": float(candle.get("quote_volume", 0.0)),
         }
-        self.history.append(bar)
-
-        if len(self.history) < 50:
-            log.info("%s warmup %d/50", self.symbol, len(self.history))
+        if self.history and bar["open_time"] <= self.history[-1]["open_time"]:
+            self.stats["duplicates"] += 1
             return
 
-        # If there was a pending signal from the previous bar, this bar's
-        # open is the live fill price. Compare to what backtest assumed.
-        if self.pending_signal_info is not None:
-            assumed = self.pending_signal_info["signal_close"]
-            actual = c["open"]
-            divergence_pct = (actual - assumed) / assumed * 100
-            with open(DIVERGENCE_LOG, "a") as f:
-                f.write(json.dumps({
-                    "ts": c["open_time"],
-                    "symbol": self.symbol,
-                    "signal_ts": self.pending_signal_info["signal_ts"],
-                    "assumed_fill": assumed,
-                    "actual_fill": actual,
-                    "divergence_pct": round(divergence_pct, 5),
-                }) + "\n")
-            self.stats["fills"] += 1
-            self.pending_signal_info = None
+        self.history.append(bar)
+        self.stats["bars"] += 1
+        history = list(self.history)
+        decision = self.decider.decide(history, bar["close"])
 
-        # Decide whether to fire a signal on THIS bar
-        hour_utc = datetime.fromtimestamp(
-            c["open_time"] / 1000, tz=timezone.utc
-        ).hour
+        if decision.warmup:
+            self.stats["warmup"] += 1
+            log.info("%s gate warmup: %d VP bars", self.symbol, decision.warmup_have)
 
-        allowed = False
-        direction = None
-        reason = ""
+        allowed = bool(decision.allowed)
+        direction = decision.direction if allowed else None
+        reason = decision.reason or ""
+        if allowed:
+            self.stats["signals"] += 1
+            log.info("%s PAPER SIGNAL %s close=%.8g reason=%s",
+                     self.symbol, direction.value, bar["close"], reason)
+            record = {
+                "ts": bar["open_time"], "symbol": self.symbol,
+                "direction": direction.value, "close": bar["close"],
+                "reason": reason,
+            }
+            with open(SIGNALS_LOG, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record) + "\n")
 
-        if hour_utc in LONDON_OPEN_HOURS:
-            a = evaluate_bucket_a(list(self.history), vp=None, close=c["close"])
-            if a.direction.value != "NEUTRAL":
-                allowed = True
-                direction = a.direction
-                reason = a.reason
-                self.stats["signals"] += 1
-                log.info(
-                    "%s SIGNAL %s @ %.2f — %s",
-                    self.symbol, a.direction.value, c["close"], reason[:100],
-                )
-                # Remember signal for divergence tracking
-                self.pending_signal_info = {
-                    "signal_ts": c["open_time"],
-                    "signal_close": c["close"],
-                    "direction": a.direction.value,
-                }
-                with open(SIGNALS_LOG, "a") as f:
-                    f.write(json.dumps({
-                        "ts": c["open_time"],
-                        "symbol": self.symbol,
-                        "direction": a.direction.value,
-                        "close": c["close"],
-                        "reason": reason,
-                    }) + "\n")
-            else:
-                self.stats["no_breakout"] += 1
-        else:
-            self.stats["london_rejects"] += 1
+        # Mirrors backtest_step5a.simulate(): process the bar, then queue its
+        # decision for a next-bar-open fill through PaperTrader.
+        self.trader.on_bar(
+            bar, allowed, direction, reason,
+            decision.a_strength, decision.b_strength, decision.delta_ratio,
+            decision.compression_ratio, decision.distance_to_level_pct,
+        )
 
-        # Feed the bar to the paper trader (same as backtest simulate())
-        self.trader.on_bar(bar, allowed, direction, reason)
-
-    async def run(self):
-        stream = BinanceMarketStream([self.symbol], INTERVAL)
+    async def run(self) -> None:
+        stream = BinanceMarketStream([self.symbol], INTERVAL, include_trades=False)
         stream.on_candle(self.on_candle)
         try:
             await stream.run()
         finally:
-            log.info("%s FINAL STATS %s", self.symbol, self.stats)
+            log.info("%s final paper-live stats: %s", self.symbol, self.stats)
 
 
-async def main():
-    os.makedirs("logs/paper_live", exist_ok=True)
+async def main() -> None:
+    validate_config()
+    os.makedirs(LOG_DIR, exist_ok=True)
+    runners = [LiveTrendRunner(symbol) for symbol in settings.SYMBOLS]
 
-    runners = [LiveTrendRunner(s) for s in SYMBOLS]
-    tasks = [asyncio.create_task(r.run()) for r in runners]
+    log.info("Preloading up to %d closed %s bars for %d symbols",
+             PRELOAD_BARS, INTERVAL, len(runners))
+    await asyncio.gather(*(runner.preload() for runner in runners))
+    log.info("Preload finished; starting closed-candle WebSocket streams")
 
+    tasks = [asyncio.create_task(runner.run()) for runner in runners]
     try:
         await asyncio.gather(*tasks)
-    except KeyboardInterrupt:
-        for t in tasks:
-            t.cancel()
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s  %(levelname)-7s  %(message)s",
+        format="%(asctime)s %(levelname)-7s %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     try:

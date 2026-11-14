@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Paper Trading Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { background-color: #0b0d11; color: #e2e8f0; font-family: 'Inter', sans-serif; }
+        .panel { background-color: #15181e; border: 1px solid #232732; }
+        .accent { color: #a855f7; }
+        .accent-bg { background-color: #a855f7; }
+    </style>
+</head>
+<body class="h-screen flex overflow-hidden">
+
+    <!-- Sidebar -->
+    <aside class="w-64 border-r border-[#232732] flex flex-col bg-[#0b0d11]">
+        <div class="p-6 flex items-center gap-3">
+            <div class="w-8 h-8 rounded-full bg-gradient-to-tr from-purple-500 to-indigo-500 flex items-center justify-center font-bold text-white">P</div>
+            <span class="text-xl font-bold text-white">PaperFlow</span>
+        </div>
+        <nav class="flex-1 px-4 space-y-2 mt-4">
+            <a href="#" class="flex items-center gap-3 px-4 py-3 bg-[#1e2230] rounded-xl text-white font-medium border border-[#2d3345]">
+                <span class="text-purple-400">◈</span> Dashboard
+            </a>
+            <a href="#" class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white transition">Portfolio</a>
+            <a href="#" class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white transition">Logs</a>
+            <a href="#" class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white transition">Settings</a>
+        </nav>
+        <div class="p-6 text-xs text-gray-500">Paper Trading Mode</div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="flex-1 overflow-y-auto p-8">
+        <header class="flex justify-between items-center mb-8">
+            <div>
+                <h1 class="text-2xl font-semibold text-white">Welcome back, Trader</h1>
+                <p class="text-gray-400 text-sm">Your live paper trading overview.</p>
+            </div>
+            <div class="flex items-center gap-4">
+                <div class="text-right">
+                    <p class="text-xs text-gray-500">Total Equity</p>
+                    <p id="total-equity" class="text-xl font-bold text-green-400">$40,000.00</p>
+                </div>
+            </div>
+        </header>
+
+        <!-- Top Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div class="panel p-6 rounded-2xl">
+                <p class="text-sm text-gray-400">Total P&L</p>
+                <h2 id="total-pnl" class="text-3xl font-bold text-white mt-2">$0.00</h2>
+                <p class="text-xs text-gray-500 mt-1">All time</p>
+            </div>
+            <div class="panel p-6 rounded-2xl">
+                <p class="text-sm text-gray-400">Win Rate</p>
+                <h2 id="win-rate" class="text-3xl font-bold text-white mt-2">0%</h2>
+                <p class="text-xs text-gray-500 mt-1">Across all closed trades</p>
+            </div>
+            <div class="panel p-6 rounded-2xl">
+                <p class="text-sm text-gray-400">Active Signals</p>
+                <h2 id="active-signals" class="text-3xl font-bold text-purple-400 mt-2">0</h2>
+                <p class="text-xs text-gray-500 mt-1">Open positions</p>
+            </div>
+        </div>
+
+        <!-- Chart & Tables -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- Equity Curve -->
+            <div class="panel p-6 rounded-2xl lg:col-span-2">
+                <h3 class="text-lg font-medium text-white mb-4">Portfolio Performance</h3>
+                <div class="h-64">
+                    <canvas id="equityChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Open Positions -->
+            <div class="panel p-6 rounded-2xl">
+                <h3 class="text-lg font-medium text-white mb-4">Open Positions</h3>
+                <div id="positions-list" class="space-y-3 text-sm">
+                    <p class="text-gray-500 text-center py-8">No open positions</p>
+                </div>
+            </div>
+            
+            <!-- Recent Signals -->
+            <div class="panel p-6 rounded-2xl lg:col-span-3">
+                <h3 class="text-lg font-medium text-white mb-4">Recent Signals (London)</h3>
+                <table class="w-full text-left text-sm text-gray-400">
+                    <thead class="text-xs uppercase bg-[#1e2230] text-gray-500">
+                        <tr>
+                            <th class="px-4 py-3 rounded-l-lg">Time</th>
+                            <th class="px-4 py-3">Symbol</th>
+                            <th class="px-4 py-3">Direction</th>
+                            <th class="px-4 py-3 rounded-r-lg">Price</th>
+                        </tr>
+                    </thead>
+                    <tbody id="signals-table">
+                        <tr><td colspan="4" class="text-center py-4">Waiting for signals...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // Initialize Chart
+        const ctx = document.getElementById('equityChart').getContext('2d');
+        let chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Equity',
+                    data: [],
+                    borderColor: '#a855f7',
+                    backgroundColor: 'rgba(168, 85, 247, 0.1)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 0
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { display: false },
+                    y: { 
+                        grid: { color: '#232732' },
+                        ticks: { color: '#64748b' }
+                    }
+                }
+            }
+        });
+
+        async function fetchData() {
+            try {
+                const res = await fetch('/api/dashboard');
+                const data = await res.json();
+
+                // Update Summary
+                document.getElementById('total-equity').innerText = `$${data.summary.total_equity.toLocaleString(undefined, {minimumFractionDigits: 2})}`;
+                
+                const pnlEl = document.getElementById('total-pnl');
+                pnlEl.innerText = `$${data.summary.total_pnl.toLocaleString(undefined, {minimumFractionDigits: 2})}`;
+                pnlEl.className = `text-3xl font-bold mt-2 ${data.summary.total_pnl >= 0 ? 'text-green-400' : 'text-red-400'}`;
+
+                document.getElementById('win-rate').innerText = `${data.summary.win_rate.toFixed(1)}%`;
+                document.getElementById('active-signals').innerText = data.positions.length;
+
+                // Update Positions
+                const posList = document.getElementById('positions-list');
+                if (data.positions.length === 0) {
+                    posList.innerHTML = '<p class="text-gray-500 text-center py-8">No open positions</p>';
+                } else {
+                    posList.innerHTML = data.positions.map(p => `
+                        <div class="flex justify-between items-center p-3 bg-[#1e2230] rounded-lg border border-[#2d3345]">
+                            <div>
+                                <p class="font-bold text-white">${p.symbol}</p>
+                                <p class="text-xs ${p.side === 'LONG' ? 'text-green-400' : 'text-red-400'}">${p.side}</p>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-white">$${p.entry.toFixed(2)}</p>
+                                <p class="text-xs text-gray-500">Stop: ${p.stop ? p.stop.toFixed(2) : 'TRAIL'}</p>
+                            </div>
+                        </div>
+                    `).join('');
+                }
+
+                // Update Signals Table
+                const sigTable = document.getElementById('signals-table');
+                if (data.signals.length === 0) {
+                    sigTable.innerHTML = '<tr><td colspan="4" class="text-center py-4">Waiting for signals...</td></tr>';
+                } else {
+                    sigTable.innerHTML = data.signals.map(s => {
+                        const date = new Date(s.ts).toLocaleString();
+                        const color = s.direction === 'LONG' ? 'text-green-400' : 'text-red-400';
+                        return `
+                            <tr class="border-b border-[#232732] hover:bg-[#1e2230]">
+                                <td class="px-4 py-3">${date}</td>
+                                <td class="px-4 py-3 font-medium text-white">${s.symbol}</td>
+                                <td class="px-4 py-3 ${color}">${s.direction}</td>
+                                <td class="px-4 py-3">$${s.close.toFixed(2)}</td>
+                            </tr>
+                        `;
+                    }).join('');
+                }
+
+                // Update Chart
+                const labels = data.equity_curve.map(p => new Date(p.ts).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}));
+                const values = data.equity_curve.map(p => p.equity);
+                chart.data.labels = labels;
+                chart.data.datasets[0].data = values;
+                
+                // Add gradient effect
+                const gradient = ctx.createLinearGradient(0, 0, 0, 300);
+                gradient.addColorStop(0, 'rgba(168, 85, 247, 0.3)');
+                gradient.addColorStop(1, 'rgba(168, 85, 247, 0)');
+                chart.data.datasets[0].backgroundColor = gradient;
+                chart.update();
+
+            } catch (e) {
+                console.error("Dashboard fetch failed:", e);
+            }
+        }
+
+        // Fetch immediately and then every 5 seconds
+        fetchData();
+        setInterval(fetchData, 5000);
+    </script>
+</body>
+</html>

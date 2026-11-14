@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Runs the paper-live engine and the dashboard in one container.
 # If either process dies, the container exits so the platform restarts it.
 

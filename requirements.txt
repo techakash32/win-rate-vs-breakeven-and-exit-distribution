@@ -1,1 +1,17 @@
 websockets
+
+# Runtime dependencies (verified against the repo's actual imports)
+
+# Binance USD-M futures WebSocket stream (data/ws_manager.py)
+websockets==17.4
+
+# Dashboard API (scripts/dashboard.py)
+fastapi==0.163.0
+uvicorn[standard]==0.54.0
+
+# Optional layers - imported lazily, only used when the API keys are set
+groq==1.7.0            # LLM narrative layer (GROQ_API_KEY)
+flashalpha==1.4.0      # GEX data (FLASHALPHA_API_KEY)
+
+# Used by the verify/check scripts
+python-dotenv==1.2.4

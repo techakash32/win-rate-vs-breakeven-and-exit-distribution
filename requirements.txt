@@ -1,10 +1,1 @@
 websockets
-numpy
-pandas
-scipy
-PyYAML
-python-dotenv
-requests
-matplotlib
-plotly
-streamlit

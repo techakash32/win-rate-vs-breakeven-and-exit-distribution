@@ -9,6 +9,8 @@
 
 > **Paper trading only.** This project never places real orders on any exchange. It is research software, not financial advice. See the [disclaimer](#disclaimer).
 
+![Live paper-trading dashboard showing total equity, P&L, win rate, portfolio performance chart and open positions](docs/dashboard.png)
+
 ---
 
 ## What is this?

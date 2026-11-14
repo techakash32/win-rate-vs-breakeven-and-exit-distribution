@@ -496,13 +496,22 @@ def validate_bars(bars: list, interval: str, requested_days: list, missing_days:
     step = intervals[interval]
     expected_ppd = 86_400_000 / step
     missing = {d.isoformat() if hasattr(d, "isoformat") else str(d) for d in missing_days}
-    available = max(1, len(requested_days))
-    bars_per_day = len(bars) / available
+    if not bars:
+        raise SystemExit(f"DATA MISMATCH: no bars loaded for {interval} backtest.")
+    first_ts = min(bar["open_time"] for bar in bars)
+    last_ts = max(bar["open_time"] for bar in bars)
+    first_day = datetime.fromtimestamp(first_ts / 1000, timezone.utc).date()
+    last_day = datetime.fromtimestamp(last_ts / 1000, timezone.utc).date()
+    observed_days = (last_day - first_day).days + 1
+    bars_per_day = len(bars) / max(1, observed_days)
+    requested_count = max(1, len(requested_days))
+    coverage_pct = observed_days / requested_count * 100
     consistent = abs(bars_per_day - expected_ppd) <= expected_ppd * 0.05
     if not consistent:
         raise SystemExit(
-            f"DATA MISMATCH: interval={interval} expects about {expected_ppd:.0f} bars/day, "
-            f"got {bars_per_day:.0f}. Refusing to backtest inconsistent data."
+            f"DATA MISMATCH: interval={interval} expects about {expected_ppd:.0f} bars/day "
+            f"over {observed_days} observed days, got {bars_per_day:.2f}. "
+            "Refusing to backtest inconsistent data."
         )
     gaps = []
     known_gaps = 0
@@ -528,7 +537,13 @@ def validate_bars(bars: list, interval: str, requested_days: list, missing_days:
     })
     return {"interval": interval, "interval_consistent": True,
             "expected_bars_per_day": round(expected_ppd, 1),
-            "bars_per_day": round(bars_per_day, 1), "gaps_count": known_gaps,
+            "bars_per_day": round(bars_per_day, 2),
+            "observed_days": observed_days,
+            "first_day": first_day.isoformat(),
+            "last_day": last_day.isoformat(),
+            "requested_days": len(requested_days),
+            "requested_window_coverage_pct": round(coverage_pct, 1),
+            "gaps_count": known_gaps,
             "synthetic_bars": synthetic_bars,
             "synthetic_days": synthetic_days,
             "known_missing_days": sorted(missing)}
@@ -611,13 +626,22 @@ def single_run(segments, days, split, reps, flip=False):
     for symbol in settings.SYMBOLS:
         symbol_bars = [bar for bar in flat if bar.get("symbol") == symbol]
         symbol_trades = [trade for trade in trades if trade.get("symbol") == symbol]
+        if symbol_bars:
+            first = datetime.fromtimestamp(min(b["open_time"] for b in symbol_bars) / 1000,
+                                           timezone.utc).date()
+            last = datetime.fromtimestamp(max(b["open_time"] for b in symbol_bars) / 1000,
+                                          timezone.utc).date()
+            symbol_days = max(1, (last - first).days + 1)
+        else:
+            symbol_days = 0
         symbol_signals = sum(
             1 for seg, seg_sigs in zip(segments, sigs)
             for bar, signal in zip(seg, seg_sigs)
             if bar.get("symbol") == symbol and signal[0]
         )
-        sm = metrics(symbol_trades, days, symbol_signals, len(symbol_bars),
+        sm = metrics(symbol_trades, symbol_days, symbol_signals, len(symbol_bars),
                      rng_seed=sum(ord(char) for char in symbol))
+        sm["observed_days"] = symbol_days
         apply_portfolio_equity(sm, symbol_trades, settings.PAPER_START_EQUITY / symbol_count)
         per_symbol[symbol] = sm
 
@@ -743,6 +767,11 @@ def build_overrides(a, guard: float) -> dict:
         ov["PAPER_MAX_HOLD_BARS"] = a.hold
     if a.cooldown is not None:
         ov["COOLDOWN_BARS"] = a.cooldown
+    slippage = getattr(a, "slippage", None)
+    if slippage is not None:
+        if slippage < 0:
+            raise ValueError("--slippage must be nonnegative")
+        ov["PAPER_SLIPPAGE_PCT"] = slippage
     ov["SWEEP_LONG_ONLY"] = a.long_only
     ov["TREND_LONDON_ONLY"] = a.london_only
     return ov
@@ -779,6 +808,8 @@ def main():
     ap.add_argument("--target-r", type=float, default=None, help="PAPER_TARGET_R_MULTIPLE override")
     ap.add_argument("--hold", type=int, default=None, help="PAPER_MAX_HOLD_BARS override")
     ap.add_argument("--cooldown", type=int, default=None, help="COOLDOWN_BARS override")
+    ap.add_argument("--slippage", type=float, default=None,
+                    help="PAPER_SLIPPAGE_PCT override, e.g. 0.04")
     ap.add_argument("--vp-window", type=int, default=None, help="VP_WINDOW_BARS (and WARMUP) override")
     ap.add_argument("--min-strength", type=float, default=None, help="MIN_AGGRESSION_STRENGTH override")
     ap.add_argument("--tag", default="", help="suffix for output files so runs don't overwrite each other")
@@ -836,6 +867,15 @@ def main():
         if funding_lookup:
             historical.attach_funding_snapshots(bars, funding_lookup)
         validation_by_symbol[symbol] = validate_bars(bars, settings.INTERVAL, days, missing)
+        v = validation_by_symbol[symbol]
+        if v["requested_window_coverage_pct"] < 99.0:
+            window_start = days[0] if days else date.fromisoformat(v["first_day"])
+            start_day = date.fromisoformat(v["first_day"])
+            log.warning(
+                "%s: history starts %s (%d days after window start %s), covers %.1f%% of window",
+                symbol, v["first_day"], (start_day - window_start).days,
+                window_start, v["requested_window_coverage_pct"],
+            )
         all_missing.extend(f"{symbol}:{d}" for d in missing)
         all_bars.extend(bars)
         segments.extend(split_segments(bars))

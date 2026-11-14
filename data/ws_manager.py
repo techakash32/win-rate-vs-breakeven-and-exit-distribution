@@ -128,7 +128,11 @@ class BinanceMarketStream:
         if not settings.LOG_RAW or self._raw_file:
             return
         os.makedirs(os.path.dirname(settings.RAW_LOG_PATH), exist_ok=True)
-        self._raw_file = open(settings.RAW_LOG_PATH, "a", encoding="utf-8", buffering=1)
+        self._raw_file = open(self._raw_file_path(), "a", encoding="utf-8", buffering=1)
+
+    @staticmethod
+    def _raw_file_path() -> str:
+        return settings.RAW_LOG_PATH
 
     def _close_raw_log(self) -> None:
         if self._raw_file:
